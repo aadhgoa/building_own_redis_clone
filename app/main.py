@@ -2,6 +2,8 @@
 import socket
 import select
 import time
+import os
+import json
 
 # Response messages
 OK_RESPONSE = b"+OK\r\n"
@@ -57,33 +59,35 @@ def handle_client_message(notified_socket, sockets_list, clients, memory):
             notified_socket.close()
             return
         
-        message = data.decode('utf-8').strip().upper()
+        message = data.decode('utf-8').strip()
+        parts = message.split()
+
+        if not parts:
+            notified_socket.sendall(UNKNOWN_COMMAND_RESPONSE)
+            return
+
+        command = parts[0].upper()
+        args = parts[1:]
         print(f"Received message from {clients[notified_socket]}: {message}")
 
         # Handle SET command (store key-value pairs)
-        if message.startswith("SET"):
+        if command == "SET":
             # Check if the message is in the correct format
-            if len(message.split()) < 3:
+            if len(args) < 2:
                 notified_socket.sendall(INVALID_SET_FORMAT_RESPONSE)
                 return 
             
-            # Extract key and value from the message
-            # Example: SET key value EX 10
+            key = args[0]
+            value = args[1]
 
-            # Split the message into parts
-            # Example: SET key value EX 10
-            parts = message.split()
-
-            if len(parts) == 3:
-                _, key, value = parts
+            if len(args) == 2:
                 ttl = None
-
-            elif len(parts) == 5 and parts[3] == "EX":
-                _, key, value, _, ttl = parts
-            
+            elif len(args) == 4 and args[2] == "EX":
+                ttl = args[3]
             else:
                 notified_socket.sendall(INVALID_SET_FORMAT_RESPONSE)
                 return
+
             # Store the key-value pair in the memory dictionary
             if key in memory:
                 notified_socket.sendall(b"-ERR Key already exists\r\n")
@@ -121,15 +125,13 @@ def handle_client_message(notified_socket, sockets_list, clients, memory):
             notified_socket.sendall(OK_RESPONSE)
 
         # Handle GET command (retrieve value by key)
-        elif message.startswith("GET"):
+        elif command == "GET":
             # Check if the message is in the correct format
-            if len(message.split()) != 2:
+            if len(args) != 1:
                 notified_socket.sendall(INVALID_GET_FORMAT_RESPONSE)
                 return 
             
-            # Extract key from the message
-            # Example: GET key
-            _, key = message.split()
+            key = args[0]
 
             # Retrieve the value from the memory dictionary
             if key in memory:
@@ -148,9 +150,9 @@ def handle_client_message(notified_socket, sockets_list, clients, memory):
                 notified_socket.sendall(NIL_RESPONSE)
         
         # Handle EXIT command (close the connection)
-        elif message.startswith("EXIT"):
+        elif command == "EXIT":
             # Check if the message is in the correct format
-            if len(message.split()) != 1:
+            if len(args) != 0:
                 notified_socket.sendall(INVALID_EXIT_FORMAT_RESPONSE)
                 return 
             
@@ -171,6 +173,78 @@ def handle_client_message(notified_socket, sockets_list, clients, memory):
         del clients[notified_socket]
         notified_socket.close()
 
+
+def save_memory_to_file(memory: dict, filename="memory.json") -> None:
+    """
+    Save the memory dictionary to a file in JSON format.
+
+    Args:
+        memory (dict): The memory dictionary to save.
+        filename (str): The name of the file to save the memory to.
+    """
+    try:
+        with open(filename, 'w') as file:
+            json.dump(memory, file)
+        print(f"Memory saved successfully to {filename}")
+    except FileNotFoundError:
+        print(f"File {filename} not found.")
+    except PermissionError:
+        print(f"Permission denied to write to {filename}.")
+    except OSError as e:
+        print(f"OS error: {e}")
+    except TypeError:
+        print(f"Error: Invalid data type in memory.")
+    except ValueError:
+        print(f"Error: Invalid value in memory.")
+    except KeyboardInterrupt:
+        print("Saving memory interrupted by user.")
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+
+def load_memory_from_file(filename="memory.json")-> dict:
+    """
+    Load the memory dictionary from a file in JSON format.
+    Args:
+        filename (str): The name of the file to load the memory from.
+    
+    Returns:
+        dict: The loaded memory dictionary.
+        """
+    
+    try:
+        # If the file exists, load the memory from it
+        if os.path.exists(filename):
+            with open(filename, 'r') as file:
+                # Load the memory from the file in JSON format
+                memory = json.load(file)
+            print(f"Memory loaded from {filename}")
+            # Return the loaded memory
+            return memory
+        else:
+            print(f"File {filename} not found.")
+            return {}
+    except FileNotFoundError:
+        print(f"File {filename} not found.")
+        return {}
+    except PermissionError:
+        print(f"Permission denied to read from {filename}.")
+        return {}
+    except OSError as e:
+        print(f"OS error: {e}")
+        return {}
+    except json.JSONDecodeError:
+        print(f"Error decoding JSON data in {filename}.")
+        return {}
+    except TypeError:
+        print(f"Error: Invalid data type in memory.")
+        return {}
+    except ValueError:
+        print(f"Error: Invalid value in memory.")
+        return {}
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        return {}
+    
 
    
 def main():
@@ -193,7 +267,7 @@ def main():
     clients = {}
 
     # Dictionary to store key-value pairs in memory
-    memory = {}
+    memory = load_memory_from_file()
 
 
 
@@ -212,6 +286,8 @@ def main():
 
         except KeyboardInterrupt:
             print("Server shutting down...")
+            # Save memory to file before shutting down
+            save_memory_to_file(memory)
             break
 
         except Exception as e:
