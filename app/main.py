@@ -17,7 +17,7 @@ def handle_new_connection(server_socket, sockets_list, clients):
     print(f"Accepted new connection from {client_address}")
 
 
-def handle_client_message(notified_socket, sockets_list, clients):
+def handle_client_message(notified_socket, sockets_list, clients, memory):
     """Handle message from the client.
     Args:
         client_socket (socket.socket): The socket of the client.
@@ -40,23 +40,71 @@ def handle_client_message(notified_socket, sockets_list, clients):
         message = data.decode('utf-8').strip().upper()
         print(f"Received message from {clients[notified_socket]}: {message}")
 
-        # If the message is "PING", send "PONG" back to the client 
-        if message == "PING":
-            notified_socket.sendall(b"+PONG\r\n")
-        elif message == "EXIT":
+        # Handle SET command (store key-value pairs)
+        if message.startswith("SET"):
+            # Check if the message is in the correct format
+            if len(message.split()) != 3:
+                notified_socket.sendall(b"-ERR Invalid SET command format\r\n")
+                return 
+            
+            # Extract key and value from the message
+            # Example: SET key value
+
+            _, key, value = message.split()
+
+            # Store the key-value pair in the memory dictionary
+            if key in memory:
+                notified_socket.sendall(b"-ERR Key already exists\r\n")
+                return 
+            if not value:
+                notified_socket.sendall(b"-ERR Value cannot be empty\r\n")
+                return
+            if not key:
+                notified_socket.sendall(b"-ERR Key cannot be empty\r\n")
+                return
+            
+            memory[key] = value
+            notified_socket.sendall(b"+OK\r\n")
+
+        # Handle GET command (retrieve value by key)
+        elif message.startswith("GET"):
+            # Check if the message is in the correct format
+            if len(message.split()) != 2:
+                notified_socket.sendall(b"-ERR Invalid GET command format\r\n")
+                return 
+            
+            # Extract key from the message
+            # Example: GET key
+            _, key = message.split()
+
+            # Retrieve the value from the memory dictionary
+            if key in memory:
+                value = memory[key]
+                notified_socket.sendall(f"${len(value)}\r\n{value}\r\n".encode('utf-8'))
+            else:
+                notified_socket.sendall(b"$-1\r\n")
+        
+        # Handle EXIT command (close the connection)
+        elif message.startswith("EXIT"):
+            # Check if the message is in the correct format
+            if len(message.split()) != 1:
+                notified_socket.sendall(b"-ERR Invalid EXIT command format\r\n")
+                return 
+            
+            # Close the connection
             print(f"Client {clients[notified_socket]} requested to close the connection.")
             sockets_list.remove(notified_socket)
             del clients[notified_socket]
             notified_socket.close()
-        else:
-            print(f"Unknown message from {clients[notified_socket]}: {message}")
-            notified_socket.sendall(b"-ERR Unknown command\r\n")
-    
+            return
+        
     except Exception as e:
-        print(f"Error handling message from {clients[notified_socket]}: {e}")
+        print(f"Error handling message from {clients[notified_socket]} : {e}")
+        # If an error occurs, close the connection
         sockets_list.remove(notified_socket)
         del clients[notified_socket]
         notified_socket.close()
+
 
    
 def main():
@@ -78,6 +126,11 @@ def main():
     # Dictionary to keep track of connected clients
     clients = {}
 
+    # Dictionary to store key-value pairs in memory
+    memory = {}
+
+
+
     while True:
         # Use select to wait for incoming connections or messages
         try:
@@ -89,7 +142,7 @@ def main():
                     handle_new_connection(server_socket, sockets_list, clients)
                 else:
                     # Handle message from the client
-                    handle_client_message(notified_socket, sockets_list, clients)
+                    handle_client_message(notified_socket, sockets_list, clients, memory)
 
         except KeyboardInterrupt:
             print("Server shutting down...")
