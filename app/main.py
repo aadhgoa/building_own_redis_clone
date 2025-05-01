@@ -4,6 +4,15 @@ import select
 import time
 import os
 import json
+import threading
+from storage import save_memory_to_file, load_memory_from_file, auto_save_memory
+
+def validate_key_value(key, value):
+    if not key:
+        return b"-ERR Key cannot be empty\r\n"
+    if not value:
+        return b"-ERR Value cannot be empty\r\n"
+    return None
 
 # Response messages
 OK_RESPONSE = b"+OK\r\n"
@@ -91,13 +100,12 @@ def handle_client_message(notified_socket, sockets_list, clients, memory):
             # Store the key-value pair in the memory dictionary
             if key in memory:
                 notified_socket.sendall(b"-ERR Key already exists\r\n")
-                return 
-            if not value:
-                notified_socket.sendall(b"-ERR Value cannot be empty\r\n")
                 return
-            if not key:
-                notified_socket.sendall(b"-ERR Key cannot be empty\r\n")
+            validation_error = validate_key_value(key, value)
+            if validation_error:
+                notified_socket.sendall(validation_error)
                 return
+
             
 
             # Store the key-value pair along with the expiration time
@@ -174,79 +182,6 @@ def handle_client_message(notified_socket, sockets_list, clients, memory):
         notified_socket.close()
 
 
-def save_memory_to_file(memory: dict, filename="memory.json") -> None:
-    """
-    Save the memory dictionary to a file in JSON format.
-
-    Args:
-        memory (dict): The memory dictionary to save.
-        filename (str): The name of the file to save the memory to.
-    """
-    try:
-        with open(filename, 'w') as file:
-            json.dump(memory, file)
-        print(f"Memory saved successfully to {filename}")
-    except FileNotFoundError:
-        print(f"File {filename} not found.")
-    except PermissionError:
-        print(f"Permission denied to write to {filename}.")
-    except OSError as e:
-        print(f"OS error: {e}")
-    except TypeError:
-        print(f"Error: Invalid data type in memory.")
-    except ValueError:
-        print(f"Error: Invalid value in memory.")
-    except KeyboardInterrupt:
-        print("Saving memory interrupted by user.")
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-
-def load_memory_from_file(filename="memory.json")-> dict:
-    """
-    Load the memory dictionary from a file in JSON format.
-    Args:
-        filename (str): The name of the file to load the memory from.
-    
-    Returns:
-        dict: The loaded memory dictionary.
-        """
-    
-    try:
-        # If the file exists, load the memory from it
-        if os.path.exists(filename):
-            with open(filename, 'r') as file:
-                # Load the memory from the file in JSON format
-                memory = json.load(file)
-            print(f"Memory loaded from {filename}")
-            # Return the loaded memory
-            return memory
-        else:
-            print(f"File {filename} not found.")
-            return {}
-    except FileNotFoundError:
-        print(f"File {filename} not found.")
-        return {}
-    except PermissionError:
-        print(f"Permission denied to read from {filename}.")
-        return {}
-    except OSError as e:
-        print(f"OS error: {e}")
-        return {}
-    except json.JSONDecodeError:
-        print(f"Error decoding JSON data in {filename}.")
-        return {}
-    except TypeError:
-        print(f"Error: Invalid data type in memory.")
-        return {}
-    except ValueError:
-        print(f"Error: Invalid value in memory.")
-        return {}
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-        return {}
-    
-
-   
 def main():
     """Main function to run the server."""
 
@@ -269,6 +204,15 @@ def main():
     # Dictionary to store key-value pairs in memory
     memory = load_memory_from_file()
 
+    # Create a threading event to signal when to stop saving memory
+    stop_event = threading.Event()
+
+    # Start a thread to automatically save memory to file every 10 seconds
+    auto_save_memory_thread = threading.Thread(target=auto_save_memory, args=(memory, 10, stop_event), daemon=True)
+
+    # Start the auto-save thread
+    auto_save_memory_thread.start()
+    print("Auto-save thread started.")
 
 
     while True:
@@ -287,6 +231,8 @@ def main():
         except KeyboardInterrupt:
             print("Server shutting down...")
             # Save memory to file before shutting down
+            stop_event.set()
+            auto_save_memory_thread.join()
             save_memory_to_file(memory)
             break
 
@@ -300,8 +246,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# This is a simple Redis-like server that handles PING and EXIT commands.
-# It uses the select module to handle multiple clients concurrently.
-# The server listens for incoming connections and responds to PING with PONG.
-# It also handles client disconnections and unknown commands.
