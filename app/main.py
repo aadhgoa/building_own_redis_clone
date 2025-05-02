@@ -7,21 +7,26 @@ import json
 import threading
 from storage import save_memory_to_file, load_memory_from_file, auto_save_memory
 from resp_parser import parse_resp
+from resp_encoder import (
+    encode_simple_string,
+    encode_error,
+    encode_bulk_string,
+    encode_nil,
+    encode_integer,
+)
+
 
 def validate_key_value(key, value):
     if not key:
-        return b"-ERR Key cannot be empty\r\n"
+        return encode_error("Key cannot be empty")
     if not value:
-        return b"-ERR Value cannot be empty\r\n"
+        return encode_error("Value cannot be empty")
     return None
+
 
 # Response messages
 OK_RESPONSE = b"+OK\r\n"
-INVALID_SET_FORMAT_RESPONSE = b"-ERR Invalid SET command format\r\n"
-INVALID_GET_FORMAT_RESPONSE = b"-ERR Invalid GET command format\r\n"
-INVALID_EXIT_FORMAT_RESPONSE = b"-ERR Invalid EXIT command format\r\n"
-UNKNOWN_COMMAND_RESPONSE = b"-ERR Unknown command\r\n"
-NIL_RESPONSE = b"$-1\r\n"
+
 
 def handle_new_connection(server_socket, sockets_list, clients):
     """
@@ -60,7 +65,7 @@ def handle_client_message(notified_socket, sockets_list, clients, memory):
     # Receive message from the client
     try:
         data = notified_socket.recv(1024)
-        
+
         if not data:
             # If no data is received, the client has closed the connection
             print(f"Client {clients[notified_socket]} disconnected")
@@ -68,7 +73,7 @@ def handle_client_message(notified_socket, sockets_list, clients, memory):
             del clients[notified_socket]
             notified_socket.close()
             return
-        
+
         # message = data.decode('utf-8').strip()
         # parts = message.split()
 
@@ -84,23 +89,25 @@ def handle_client_message(notified_socket, sockets_list, clients, memory):
         try:
             parts = parse_resp(data)
             if not parts:
-                notified_socket.sendall(UNKNOWN_COMMAND_RESPONSE)
+                notified_socket.sendall(encode_error("Unknown command"))
                 return
             command = parts[0].upper()
             args = parts[1:]
-            print(f"Received RESP command from {clients[notified_socket]}: {command} {args}")
+            print(
+                f"Received RESP command from {clients[notified_socket]}: {command} {args}"
+            )
         except Exception as e:
             print(f"RESP parse error from {clients[notified_socket]}: {e}")
-            notified_socket.sendall(b"-ERR Invalid RESP format\r\n")
+            notified_socket.sendall(encode_error("Invalid RESP format"))
             return
 
         # Handle SET command (store key-value pairs)
         if command == "SET":
             # Check if the message is in the correct format
             if len(args) < 2:
-                notified_socket.sendall(INVALID_SET_FORMAT_RESPONSE)
-                return 
-            
+                notified_socket.sendall(encode_error("Invalid SET command format"))
+                return
+
             key = args[0]
             value = args[1]
 
@@ -109,19 +116,17 @@ def handle_client_message(notified_socket, sockets_list, clients, memory):
             elif len(args) == 4 and args[2] == "EX":
                 ttl = args[3]
             else:
-                notified_socket.sendall(INVALID_SET_FORMAT_RESPONSE)
+                notified_socket.sendall(encode_error("Invalid SET command format"))
                 return
 
             # Store the key-value pair in the memory dictionary
             if key in memory:
-                notified_socket.sendall(b"-ERR Key already exists\r\n")
+                notified_socket.sendall(encode_error("Key already exists"))
                 return
             validation_error = validate_key_value(key, value)
             if validation_error:
                 notified_socket.sendall(validation_error)
                 return
-
-            
 
             # Store the key-value pair along with the expiration time
             # Example: SET key value EX 10
@@ -129,66 +134,71 @@ def handle_client_message(notified_socket, sockets_list, clients, memory):
                 try:
                     ttl = int(ttl)
                     if ttl <= 0:
-                        notified_socket.sendall(b"-ERR Invalid TTL value\r\n")
+                        notified_socket.sendall(encode_error("Invalid TTL value"))
                         return
-                    
+
                     # Calculate the expiration time
                     expiry_time = time.time() + ttl
 
                     # Store the key-value pair with the expiration time
-                    memory[key] = {'value': value, 'expiry_time': expiry_time}
+                    memory[key] = {"value": value, "expiry_time": expiry_time}
                 except ValueError:
-                    notified_socket.sendall(b"-ERR Invalid TTL value\r\n")
-                    return 
+                    notified_socket.sendall(encode_error("Invalid TTL value"))
+                    return
             else:
                 # Store the key-value pair without expiration
-                memory[key] = {'value': value, 'expiry_time': None}
+                memory[key] = {"value": value, "expiry_time": None}
             print(f"Stored key-value pair: {key} -> {value}")
             # Send success response to the client
-            notified_socket.sendall(OK_RESPONSE)
+            notified_socket.sendall(encode_simple_string("OK"))
 
         # Handle GET command (retrieve value by key)
         elif command == "GET":
             # Check if the message is in the correct format
             if len(args) != 1:
-                notified_socket.sendall(INVALID_GET_FORMAT_RESPONSE)
-                return 
-            
+                notified_socket.sendall(encode_error("Invalid GET command format"))
+                return
+
             key = args[0]
 
             # Retrieve the value from the memory dictionary
             if key in memory:
                 # Check if the key has expired
-                if memory[key]['expiry_time'] is not None and time.time() > memory[key]['expiry_time']:
+                if (
+                    memory[key]["expiry_time"] is not None
+                    and time.time() > memory[key]["expiry_time"]
+                ):
                     # Key has expired, remove it from memory
                     del memory[key]
-                    notified_socket.sendall(NIL_RESPONSE)
-                    return 
+                    notified_socket.sendall(encode_nil())
+                    return
                 # Key is valid, retrieve the value
                 # Example: GET key
                 # Send the value to the client
-                value = memory[key]['value']
-                notified_socket.sendall(f"${len(value)}\r\n{value}\r\n".encode('utf-8'))
+                value = memory[key]["value"]
+                notified_socket.sendall(encode_bulk_string(value))
             else:
-                notified_socket.sendall(NIL_RESPONSE)
-        
+                notified_socket.sendall(encode_nil())
+
         # Handle EXIT command (close the connection)
         elif command == "EXIT":
             # Check if the message is in the correct format
             if len(args) != 0:
-                notified_socket.sendall(INVALID_EXIT_FORMAT_RESPONSE)
-                return 
-            
+                notified_socket.sendall(encode_error("Invalid EXIT command format"))
+                return
+
             # Close the connection
-            print(f"Client {clients[notified_socket]} requested to close the connection.")
+            print(
+                f"Client {clients[notified_socket]} requested to close the connection."
+            )
             sockets_list.remove(notified_socket)
             del clients[notified_socket]
             notified_socket.close()
             return
-        
+
         else:
-            notified_socket.sendall(UNKNOWN_COMMAND_RESPONSE)
-        
+            notified_socket.sendall(encode_error("Unknown command"))
+
     except Exception as e:
         print(f"Error handling message from {clients[notified_socket]} : {e}")
         # If an error occurs, close the connection
@@ -203,7 +213,7 @@ def main():
     print(f"Starting the redis server on port 8080")
 
     # Create a socket server with the option to reuse the port
-    server_socket = socket.create_server(('localhost', 8080), reuse_port=True)
+    server_socket = socket.create_server(("localhost", 8080), reuse_port=True)
 
     # Listen for incoming connections
     server_socket.listen()
@@ -223,25 +233,28 @@ def main():
     stop_event = threading.Event()
 
     # Start a thread to automatically save memory to file every 10 seconds
-    auto_save_memory_thread = threading.Thread(target=auto_save_memory, args=(memory, 10, stop_event), daemon=True)
+    auto_save_memory_thread = threading.Thread(
+        target=auto_save_memory, args=(memory, 10, stop_event), daemon=True
+    )
 
     # Start the auto-save thread
     auto_save_memory_thread.start()
     print("Auto-save thread started.")
 
-
     while True:
         # Use select to wait for incoming connections or messages
         try:
             read_sockets, _, _ = select.select(sockets_list, [], [])
-        
+
             for notified_socket in read_sockets:
                 # If the notified socket is the server socket, it means a new connection
                 if notified_socket == server_socket:
                     handle_new_connection(server_socket, sockets_list, clients)
                 else:
                     # Handle message from the client
-                    handle_client_message(notified_socket, sockets_list, clients, memory)
+                    handle_client_message(
+                        notified_socket, sockets_list, clients, memory
+                    )
 
         except KeyboardInterrupt:
             print("Server shutting down...")
