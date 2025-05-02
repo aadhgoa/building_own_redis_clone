@@ -6,6 +6,7 @@ import os
 import json
 import threading
 from storage import save_memory_to_file, load_memory_from_file, auto_save_memory
+from resp_parser import parse_resp
 
 def validate_key_value(key, value):
     if not key:
@@ -68,16 +69,30 @@ def handle_client_message(notified_socket, sockets_list, clients, memory):
             notified_socket.close()
             return
         
-        message = data.decode('utf-8').strip()
-        parts = message.split()
+        # message = data.decode('utf-8').strip()
+        # parts = message.split()
 
-        if not parts:
-            notified_socket.sendall(UNKNOWN_COMMAND_RESPONSE)
+        # if not parts:
+        #     notified_socket.sendall(UNKNOWN_COMMAND_RESPONSE)
+        #     return
+
+        # command = parts[0].upper()
+        # args = parts[1:]
+        # print(f"Received message from {clients[notified_socket]}: {message}")
+
+        # Parse the RESP data
+        try:
+            parts = parse_resp(data)
+            if not parts:
+                notified_socket.sendall(UNKNOWN_COMMAND_RESPONSE)
+                return
+            command = parts[0].upper()
+            args = parts[1:]
+            print(f"Received RESP command from {clients[notified_socket]}: {command} {args}")
+        except Exception as e:
+            print(f"RESP parse error from {clients[notified_socket]}: {e}")
+            notified_socket.sendall(b"-ERR Invalid RESP format\r\n")
             return
-
-        command = parts[0].upper()
-        args = parts[1:]
-        print(f"Received message from {clients[notified_socket]}: {message}")
 
         # Handle SET command (store key-value pairs)
         if command == "SET":
